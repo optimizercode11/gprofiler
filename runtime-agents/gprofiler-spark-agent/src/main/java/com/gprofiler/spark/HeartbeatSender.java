@@ -18,8 +18,20 @@ import com.google.gson.JsonObject;
 
 public class HeartbeatSender {
 
-    private static final String TARGET_URL = "http://127.0.0.1:12345/spark";
+    private static final String TARGET_URL;
     private static final int INTERVAL_SECONDS = 60;
+
+    static {
+        String host = System.getenv("GPROFILER_HOST");
+        if (host == null || host.isEmpty()) {
+            host = "127.0.0.1";
+        }
+        String port = System.getenv("GPROFILER_PORT");
+        if (port == null || port.isEmpty()) {
+            port = "12345";
+        }
+        TARGET_URL = "http://" + host + ":" + port + "/spark";
+    }
 
     private static final AtomicBoolean profilingEnabled = new AtomicBoolean(false);
     private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2, r -> {
