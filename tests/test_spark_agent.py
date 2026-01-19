@@ -8,8 +8,20 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import subprocess
 
-AGENT_JAR = os.path.abspath("runtime-agents/gprofiler-spark-agent/target/gprofiler-spark-agent-1.0-SNAPSHOT.jar")
+import xml.etree.ElementTree as ET
+
 POM_XML = os.path.abspath("runtime-agents/gprofiler-spark-agent/pom.xml")
+
+def get_agent_jar_path():
+    tree = ET.parse(POM_XML)
+    root = tree.getroot()
+    # Namespace handling
+    ns = {'mvn': 'http://maven.apache.org/POM/4.0.0'}
+    version = root.find('mvn:version', ns).text
+    artifact_id = root.find('mvn:artifactId', ns).text
+    return os.path.abspath(f"runtime-agents/gprofiler-spark-agent/target/{artifact_id}-{version}.jar")
+
+AGENT_JAR = get_agent_jar_path()
 
 def build_agent_jar():
     print("Building Spark Agent Jar...")
