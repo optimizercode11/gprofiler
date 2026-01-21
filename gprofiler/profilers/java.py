@@ -376,10 +376,12 @@ class JavaMetadata(ApplicationMetadata):
         stop_event: Event,
         jattach_jcmd_runner: JattachJcmdRunner,
         java_collect_jvm_flags: Union[JavaFlagCollectionOptions, List[str]],
+        spark_controller: Optional[Any] = None,
     ):
         super().__init__(stop_event)
         self.jattach_jcmd_runner = jattach_jcmd_runner
         self.java_collect_jvm_flags = java_collect_jvm_flags
+        self.spark_controller = spark_controller
 
     def make_application_metadata(self, process: Process) -> Dict[str, Any]:
         version = get_java_version(process, self._stop_event) or "/java not found"
@@ -400,6 +402,14 @@ class JavaMetadata(ApplicationMetadata):
             "libjvm_elfid": libjvm_elfid,
             "jvm_flags": jvm_flags,
         }
+
+        if self.spark_controller:
+            try:
+                thread_map = self.spark_controller.get_thread_map(process.pid)
+                if thread_map:
+                    metadata["spark_threads"] = thread_map
+            except Exception:
+                logger.debug(f"Failed to get spark threads for {process.pid}", exc_info=True)
 
         metadata.update(super().make_application_metadata(process))
         return metadata
@@ -1044,9 +1054,13 @@ class JavaProfiler(SpawningProcessProfilerBase):
         self._ap_timeout = self._duration + self._AP_EXTRA_TIMEOUT_S
         application_identifiers.ApplicationIdentifiers.init_java(self._jattach_jcmd_runner)
         self._metadata = JavaMetadata(
-            self._profiler_state.stop_event, self._jattach_jcmd_runner, self._collect_jvm_flags
+            self._profiler_state.stop_event,
+            self._jattach_jcmd_runner,
+            self._collect_jvm_flags,
+            self._profiler_state.spark_controller,
         )
         self._report_meminfo = java_async_profiler_report_meminfo
+        self.restart_requested = False
         self._java_full_hserr = java_full_hserr
         self._include_method_modifiers = java_include_method_modifiers
         self._java_line_numbers = java_line_numbers
@@ -1285,13 +1299,29 @@ class JavaProfiler(SpawningProcessProfilerBase):
             logger.debug("Process paths", pid=process.pid, execfn=execfn, exe=exe)
             logger.debug("Process mapped files", pid=process.pid, maps=set(m.path for m in process.memory_maps()))
 
+        mode = self._mode
+        ap_args = self._ap_args
+
+        # If this is a Spark process (has spark threads metadata), enforce wall time and threaded profiling
+        if app_metadata and "spark_threads" in app_metadata:
+            if mode != "alloc":  # Keep alloc mode if explicitly set
+                mode = "wall"
+
+            # Add -t if not present
+            if not ap_args:
+                ap_args = "-t"
+            elif "-t" not in ap_args.split(","):  # Simple check, assumes comma separated
+                ap_args = f"{ap_args},-t"
+
+            logger.debug(f"Enforcing Spark options for {process.pid}: mode={mode}, args={ap_args}")
+
         with AsyncProfiledProcess(
             process,
             self._profiler_state,
-            self._mode,
+            mode,
             self._ap_safemode,
             self._ap_features,
-            self._ap_args,
+            ap_args,
             self._jattach_timeout,
             self._ap_mcache,
             self._report_meminfo,
@@ -1335,18 +1365,53 @@ class JavaProfiler(SpawningProcessProfilerBase):
                     f"async-profiler is still running in {ap_proc.process.pid}, even after trying to stop it!"
                 )
 
-        try:
-            wait_event(
-                duration, self._profiler_state.stop_event, lambda: not is_process_running(ap_proc.process), interval=1
-            )
-        except TimeoutError:
-            # Process still running. We will stop the profiler in finally block.
-            pass
-        else:
-            # Process terminated, was it due to an error?
-            self._check_hotspot_error(ap_proc)
-            logger.debug(f"Profiled process {ap_proc.process.pid} exited before stopping async-profiler")
-            # fall-through - try to read the output, since async-profiler writes it upon JVM exit.
+        restart_event = None
+        if self._profiler_state.spark_controller:
+            restart_event = self._profiler_state.spark_controller.get_restart_event(ap_proc.process.pid)
+            if restart_event:
+                restart_event.clear()
+
+        start_time = time.monotonic()
+        while True:
+            # Calculate remaining duration
+            elapsed = time.monotonic() - start_time
+            remaining = duration - elapsed
+            if remaining <= 0:
+                break
+
+            try:
+                wait_event(
+                    remaining,
+                    self._profiler_state.stop_event,
+                    lambda: (not is_process_running(ap_proc.process))
+                    or (restart_event is not None and restart_event.is_set()),
+                    interval=1,
+                )
+                # If wait_event returned, condition met (process died or restart event)
+                if not is_process_running(ap_proc.process):
+                    # Process terminated
+                    self._check_hotspot_error(ap_proc)
+                    logger.debug(f"Profiled process {ap_proc.process.pid} exited before stopping async-profiler")
+                    break
+
+                if restart_event and restart_event.is_set():
+                    # Check debounce (e.g. 5 seconds)
+                    current_duration = time.monotonic() - start_time
+                    if current_duration < 5.0:
+                        logger.debug(
+                            f"Ignoring restart request for {ap_proc.process.pid}: run duration {current_duration:.1f}s < 5s"
+                        )
+                        restart_event.clear()
+                        continue  # Continue waiting
+
+                    logger.info(f"Restart requested for process {ap_proc.process.pid} due to thread change")
+                    self.restart_requested = True
+                    restart_event.clear()
+                    break
+
+            except TimeoutError:
+                # Duration reached
+                break
         finally:
             if is_process_running(ap_proc.process):
                 ap_log = ap_proc.stop_async_profiler(True)
@@ -1397,10 +1462,34 @@ class JavaProfiler(SpawningProcessProfilerBase):
             logger.debug("Java profiling has been disabled, skipping profiling of all java processes")
             # continue - _profile_process will return an appropriate error for each process selected for
             # profiling.
+
+        if self._profiler_state.processes_to_profile is not None:
+            # If specific PIDs are requested, check only them (avoid pgrep_maps which scans all processes)
+            candidates = []
+            for p in self._profiler_state.processes_to_profile:
+                try:
+                    if self._should_profile_process(p):
+                        candidates.append(p)
+                except NoSuchProcess:
+                    pass
+                except Exception as e:
+                    logger.warning(f"Error checking process {p.pid}: {e}")
+            return candidates
+
         return pgrep_maps(DETECTED_JAVA_PROCESSES_REGEX)
 
     def _should_profile_process(self, process: Process) -> bool:
-        return search_proc_maps(process, DETECTED_JAVA_PROCESSES_REGEX) is not None and not self._should_skip_process(process)
+        has_libjvm = search_proc_maps(process, DETECTED_JAVA_PROCESSES_REGEX) is not None
+        if not has_libjvm:
+            logger.debug(f"Process {process.pid} skipped: libjvm not found in maps")
+            return False
+
+        skip = self._should_skip_process(process)
+        if skip:
+            logger.debug(f"Process {process.pid} skipped: too young")
+            return False
+
+        return True
     
     def _should_skip_process(self, process: Process) -> bool:
         # Skip short-lived processes - if a process is younger than min_duration,
@@ -1501,6 +1590,7 @@ class JavaProfiler(SpawningProcessProfilerBase):
             self._handle_kernel_messages(messages)
 
     def snapshot(self) -> ProcessToProfileData:
+        self.restart_requested = False
         try:
             return super().snapshot()
         finally:

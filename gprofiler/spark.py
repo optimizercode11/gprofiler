@@ -49,7 +49,7 @@ class SparkController:
     def __init__(self, port: int = 12345, client: Optional[ProfilerAPIClient] = None):
         self._port = port
         self._client = client
-        # Map PID -> {"app_id": str, "last_heartbeat": float, "threads": {tid: name}}
+        # Map PID -> {"app_id": str, "last_heartbeat": float, "threads": {tid: name}, "restart_event": Event}
         self._registry: Dict[int, Dict] = {}
         self._registry_lock = threading.Lock()
 
@@ -134,17 +134,37 @@ class SparkController:
                 self._registry[pid] = {
                     "app_id": app_id,
                     "last_heartbeat": time.time(),
-                    "threads": {}
+                    "threads": {},
+                    "restart_event": threading.Event(),
                 }
 
-            threads_map = self._registry[pid].get("threads", {})
+            entry = self._registry[pid]
+            threads_map = entry.get("threads", {})
             for t in threads_array:
                 tid = t.get("tid")
                 name = t.get("name")
                 if tid is not None and name:
                     threads_map[tid] = name
 
-            self._registry[pid]["threads"] = threads_map
+            entry["threads"] = threads_map
+
+            if "restart_event" not in entry:
+                entry["restart_event"] = threading.Event()
+            entry["restart_event"].set()
+
+    def get_restart_event(self, pid: int) -> Optional[threading.Event]:
+        with self._registry_lock:
+            if pid in self._registry:
+                if "restart_event" not in self._registry[pid]:
+                    self._registry[pid]["restart_event"] = threading.Event()
+                return self._registry[pid]["restart_event"]
+        return None
+
+    def get_thread_map(self, pid: int) -> Dict[int, str]:
+        with self._registry_lock:
+            if pid in self._registry:
+                return self._registry[pid].get("threads", {}).copy()
+        return {}
 
     def _run_backend_poller(self) -> None:
         while not self._stop_event.is_set():
