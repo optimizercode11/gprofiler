@@ -640,6 +640,16 @@ class GProfiler:
                 self.maybe_cleanup_subprocesses()
                 logger.debug("Comprehensive post-snapshot cleanup completed")
 
+                restart_requested = False
+                for prof in self.process_profilers:
+                    if getattr(prof, "restart_requested", False):
+                        restart_requested = True
+                        break
+
+                if restart_requested:
+                    logger.info("Skipping wait due to restart request")
+                    continue
+
                 # wait for one duration
                 self._profiler_state.stop_event.wait(max(self._duration - (time.monotonic() - snapshot_start), 0))
 
