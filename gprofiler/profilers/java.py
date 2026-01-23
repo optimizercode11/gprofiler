@@ -1365,53 +1365,54 @@ class JavaProfiler(SpawningProcessProfilerBase):
                     f"async-profiler is still running in {ap_proc.process.pid}, even after trying to stop it!"
                 )
 
-        restart_event = None
-        if self._profiler_state.spark_controller:
-            restart_event = self._profiler_state.spark_controller.get_restart_event(ap_proc.process.pid)
-            if restart_event:
-                restart_event.clear()
-
-        start_time = time.monotonic()
-        while True:
-            # Calculate remaining duration
-            elapsed = time.monotonic() - start_time
-            remaining = duration - elapsed
-            if remaining <= 0:
-                break
-
-            try:
-                wait_event(
-                    remaining,
-                    self._profiler_state.stop_event,
-                    lambda: (not is_process_running(ap_proc.process))
-                    or (restart_event is not None and restart_event.is_set()),
-                    interval=1,
-                )
-                # If wait_event returned, condition met (process died or restart event)
-                if not is_process_running(ap_proc.process):
-                    # Process terminated
-                    self._check_hotspot_error(ap_proc)
-                    logger.debug(f"Profiled process {ap_proc.process.pid} exited before stopping async-profiler")
-                    break
-
-                if restart_event and restart_event.is_set():
-                    # Check debounce (e.g. 5 seconds)
-                    current_duration = time.monotonic() - start_time
-                    if current_duration < 5.0:
-                        logger.debug(
-                            f"Ignoring restart request for {ap_proc.process.pid}: run duration {current_duration:.1f}s < 5s"
-                        )
-                        restart_event.clear()
-                        continue  # Continue waiting
-
-                    logger.info(f"Restart requested for process {ap_proc.process.pid} due to thread change")
-                    self.restart_requested = True
+        try:
+            restart_event = None
+            if self._profiler_state.spark_controller:
+                restart_event = self._profiler_state.spark_controller.get_restart_event(ap_proc.process.pid)
+                if restart_event:
                     restart_event.clear()
+
+            start_time = time.monotonic()
+            while True:
+                # Calculate remaining duration
+                elapsed = time.monotonic() - start_time
+                remaining = duration - elapsed
+                if remaining <= 0:
                     break
 
-            except TimeoutError:
-                # Duration reached
-                break
+                try:
+                    wait_event(
+                        remaining,
+                        self._profiler_state.stop_event,
+                        lambda: (not is_process_running(ap_proc.process))
+                        or (restart_event is not None and restart_event.is_set()),
+                        interval=1,
+                    )
+                    # If wait_event returned, condition met (process died or restart event)
+                    if not is_process_running(ap_proc.process):
+                        # Process terminated
+                        self._check_hotspot_error(ap_proc)
+                        logger.debug(f"Profiled process {ap_proc.process.pid} exited before stopping async-profiler")
+                        break
+
+                    if restart_event and restart_event.is_set():
+                        # Check debounce (e.g. 5 seconds)
+                        current_duration = time.monotonic() - start_time
+                        if current_duration < 5.0:
+                            logger.debug(
+                                f"Ignoring restart request for {ap_proc.process.pid}: run duration {current_duration:.1f}s < 5s"
+                            )
+                            restart_event.clear()
+                            continue  # Continue waiting
+
+                        logger.info(f"Restart requested for process {ap_proc.process.pid} due to thread change")
+                        self.restart_requested = True
+                        restart_event.clear()
+                        break
+
+                except TimeoutError:
+                    # Duration reached
+                    break
         finally:
             if is_process_running(ap_proc.process):
                 ap_log = ap_proc.stop_async_profiler(True)
