@@ -14,7 +14,7 @@ public class Agent {
     public static final BlockingQueue<Thread> threadUpdateQueue = new LinkedBlockingQueue<Thread>();
 
     public static void premain(String agentArgs, Instrumentation inst) {
-        System.out.println("gProfiler Spark Agent starting...");
+        Logger.info("gProfiler Spark Agent starting...");
         instrumentation = inst;
 
         try {
@@ -22,9 +22,10 @@ public class Agent {
              if (codeSource != null) {
                  File agentJarFile = new File(codeSource.getLocation().toURI().getPath());
                  inst.appendToBootstrapClassLoaderSearch(new JarFile(agentJarFile));
+                 Logger.debug("Appended agent to bootstrap classloader search: " + agentJarFile.getAbsolutePath());
              }
         } catch (Exception e) {
-            System.err.println("Failed to append agent to boot classpath: " + e.getMessage());
+            Logger.error("Failed to append agent to boot classpath", e);
         }
 
         HeartbeatSender.start();
@@ -33,8 +34,9 @@ public class Agent {
 
         try {
             inst.retransformClasses(java.lang.Thread.class);
+            Logger.info("Retransformed java.lang.Thread");
         } catch (Exception e) {
-            System.err.println("Failed to retransform java.lang.Thread: " + e.getMessage());
+            Logger.error("Failed to retransform java.lang.Thread", e);
         }
     }
 
