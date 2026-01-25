@@ -50,8 +50,9 @@
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                   <manifestEntries>
                     <Premain-Class>com.gprofiler.spark.Agent</Premain-Class>
+                    <Agent-Class>com.gprofiler.spark.Agent</Agent-Class>
+                    <Can-Redefine-Classes>true</Can-Redefine-Classes>
                     <Can-Retransform-Classes>true</Can-Retransform-Classes>
-                    <Boot-Class-Path>gprofiler-spark-agent-1.0-SNAPSHOT.jar</Boot-Class-Path>
                   </manifestEntries>
                 </transformer>
               </transformers>

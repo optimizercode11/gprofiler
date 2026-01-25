@@ -43,19 +43,20 @@ public class HeartbeatSender {
     private static final Gson gson = new Gson();
 
     public static void start() {
+        Logger.info("Starting HeartbeatSender to " + TARGET_URL);
         scheduler.scheduleAtFixedRate(HeartbeatSender::sendHeartbeat, 0, INTERVAL_SECONDS, TimeUnit.SECONDS);
         scheduler.scheduleWithFixedDelay(HeartbeatSender::consumeThreadUpdates, 0, 1, TimeUnit.MILLISECONDS);
     }
 
     private static void consumeThreadUpdates() {
         try {
-            Thread t;
+            ThreadInfoUpdate update;
             // Drain the queue of available updates
-            while ((t = Agent.threadUpdateQueue.poll()) != null) {
-                sendThreadInfo(t);
+            while ((update = Agent.threadUpdateQueue.poll()) != null) {
+                sendThreadInfo(update);
             }
         } catch (Exception e) {
-            // Ignore errors
+            Logger.error("Error consuming thread updates", e);
         }
     }
 
@@ -64,7 +65,9 @@ public class HeartbeatSender {
             JsonObject metadata = SparkMetadata.getMetadata();
             String jsonString = gson.toJson(metadata);
 
+            Logger.debug("Sending heartbeat: " + jsonString);
             String responseBody = post(jsonString);
+            Logger.debug("Heartbeat response: " + responseBody);
 
             if (responseBody != null) {
                 try {
@@ -75,19 +78,21 @@ public class HeartbeatSender {
                     }
 
                     if (shouldProfile && !profilingEnabled.get()) {
+                        Logger.info("Profiling enabled by server response");
                         profilingEnabled.set(true);
                         // Initial thread dump
                         sendAllThreads();
                     } else if (!shouldProfile && profilingEnabled.get()) {
+                        Logger.info("Profiling disabled by server response");
                         profilingEnabled.set(false);
                     }
                 } catch (Exception e) {
-                    // Ignore parse errors
+                    Logger.error("Failed to parse heartbeat response", e);
                 }
             }
 
         } catch (Exception e) {
-            // Squelch errors
+            Logger.error("Error sending heartbeat", e);
         }
     }
 
@@ -109,14 +114,15 @@ public class HeartbeatSender {
                 }
                 payload.add("threads", threadsArray);
 
+                Logger.debug("Sending all threads info (count: " + stacks.size() + ")");
                 sendPayload(payload);
             } catch (Exception e) {
-                e.printStackTrace();
+                Logger.error("Error sending all threads", e);
             }
         });
     }
 
-    public static void sendThreadInfo(Thread t) {
+    public static void sendThreadInfo(ThreadInfoUpdate update) {
         if (!profilingEnabled.get()) return;
 
         scheduler.execute(() -> {
@@ -126,15 +132,16 @@ public class HeartbeatSender {
 
                 JsonArray threadsArray = new JsonArray();
                 JsonObject threadInfo = new JsonObject();
-                threadInfo.addProperty("tid", t.getId());
-                threadInfo.addProperty("name", t.getName());
+                threadInfo.addProperty("tid", update.getThreadId());
+                threadInfo.addProperty("name", update.getThreadName());
                 threadsArray.add(threadInfo);
 
                 payload.add("threads", threadsArray);
 
+                Logger.debug("Sending thread info update for: " + update.getThreadName());
                 sendPayload(payload);
             } catch (Exception e) {
-                // Ignore
+                Logger.error("Error sending thread info", e);
             }
         });
     }
@@ -143,7 +150,7 @@ public class HeartbeatSender {
         try {
             post(gson.toJson(payload));
         } catch (Exception e) {
-            // Ignore
+            Logger.error("Error sending payload", e);
         }
     }
 
@@ -172,6 +179,7 @@ public class HeartbeatSender {
             }
 
         } catch (Exception e) {
+            Logger.error("HTTP POST failed to " + TARGET_URL, e);
             return null;
         } finally {
             if (con != null) {
