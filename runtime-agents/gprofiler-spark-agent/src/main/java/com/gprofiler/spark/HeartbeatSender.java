@@ -50,10 +50,10 @@ public class HeartbeatSender {
 
     private static void consumeThreadUpdates() {
         try {
-            Thread t;
+            ThreadInfoUpdate update;
             // Drain the queue of available updates
-            while ((t = Agent.threadUpdateQueue.poll()) != null) {
-                sendThreadInfo(t);
+            while ((update = Agent.threadUpdateQueue.poll()) != null) {
+                sendThreadInfo(update);
             }
         } catch (Exception e) {
             Logger.error("Error consuming thread updates", e);
@@ -122,7 +122,7 @@ public class HeartbeatSender {
         });
     }
 
-    public static void sendThreadInfo(Thread t) {
+    public static void sendThreadInfo(ThreadInfoUpdate update) {
         if (!profilingEnabled.get()) return;
 
         scheduler.execute(() -> {
@@ -132,13 +132,13 @@ public class HeartbeatSender {
 
                 JsonArray threadsArray = new JsonArray();
                 JsonObject threadInfo = new JsonObject();
-                threadInfo.addProperty("tid", t.getId());
-                threadInfo.addProperty("name", t.getName());
+                threadInfo.addProperty("tid", update.getThreadId());
+                threadInfo.addProperty("name", update.getThreadName());
                 threadsArray.add(threadInfo);
 
                 payload.add("threads", threadsArray);
 
-                Logger.debug("Sending thread info update for: " + t.getName());
+                Logger.debug("Sending thread info update for: " + update.getThreadName());
                 sendPayload(payload);
             } catch (Exception e) {
                 Logger.error("Error sending thread info", e);
