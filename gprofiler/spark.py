@@ -46,9 +46,10 @@ class SparkController:
     # Update allowed apps list every 60 seconds
     BACKEND_POLL_INTERVAL_S = 60
 
-    def __init__(self, port: int = 12345, client: Optional[ProfilerAPIClient] = None):
+    def __init__(self, port: int = 12345, client: Optional[ProfilerAPIClient] = None, profile_all: bool = False):
         self._port = port
         self._client = client
+        self._profile_all = profile_all
         # Map PID -> {"app_id": str, "last_heartbeat": float, "threads": {tid: name}, "restart_event": Event}
         self._registry: Dict[int, Dict] = {}
         self._registry_lock = threading.Lock()
@@ -114,6 +115,9 @@ class SparkController:
             is_allowed = False
             with self._allowed_apps_lock:
                 is_allowed = app_id in self._allowed_apps
+
+            if self._profile_all:
+                is_allowed = True
 
             with self._registry_lock:
                 entry = self._registry.get(pid, {"app_id": app_id, "threads": {}})
@@ -196,6 +200,9 @@ class SparkController:
             self._stop_event.wait(10)
 
     def filter_processes(self, processes: List[Process]) -> List[Process]:
+        if self._profile_all:
+            return list(processes)
+
         allowed = set()
         with self._allowed_apps_lock:
             allowed = self._allowed_apps.copy()

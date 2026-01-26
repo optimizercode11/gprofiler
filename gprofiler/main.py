@@ -170,6 +170,7 @@ class GProfiler:
         self._perfspect_path = perfspect_path
         self._perfspect_duration = perfspect_duration
         self._spark_controller: Optional[SparkController] = None
+        self._profile_all_spark = user_args.get("profile_all_spark", False)
 
         if self._collect_metadata:
             self._static_metadata = get_static_metadata(self._spawn_time, user_args, self._external_metadata_path)
@@ -184,8 +185,10 @@ class GProfiler:
         # files unnecessarily.
         container_names_client = ContainerNamesClient() if self._enrichment_options.container_names else None
 
-        if self._profiler_api_client:
-            self._spark_controller = SparkController(client=self._profiler_api_client)
+        if self._profiler_api_client or self._profile_all_spark:
+            self._spark_controller = SparkController(
+                client=self._profiler_api_client, profile_all=self._profile_all_spark
+            )
 
         self._profiler_state = ProfilerState(
             stop_event=Event(),
@@ -901,6 +904,13 @@ def parse_cmd_args() -> configargparse.Namespace:
         default=False,
         action="store_true",
         help="Deprecated! Removed in version 1.42.0",
+    )
+
+    spark_options.add_argument(
+        "--profile-all-spark",
+        action="store_true",
+        default=False,
+        help="Profile all Spark applications, ignoring server-side allow-list (testing only)",
     )
 
     nodejs_options = parser.add_argument_group("NodeJS")
