@@ -72,19 +72,21 @@ public class HeartbeatSender {
             if (responseBody != null) {
                 try {
                     JsonObject response = gson.fromJson(responseBody, JsonObject.class);
-                    boolean shouldProfile = false;
-                    if (response.has("profile")) {
-                        shouldProfile = response.get("profile").getAsBoolean();
-                    }
+                    if (response != null) {
+                        boolean shouldProfile = false;
+                        if (response.has("profile")) {
+                            shouldProfile = response.get("profile").getAsBoolean();
+                        }
 
-                    if (shouldProfile && !profilingEnabled.get()) {
-                        Logger.info("Profiling enabled by server response");
-                        profilingEnabled.set(true);
-                        // Initial thread dump
-                        sendAllThreads();
-                    } else if (!shouldProfile && profilingEnabled.get()) {
-                        Logger.info("Profiling disabled by server response");
-                        profilingEnabled.set(false);
+                        if (shouldProfile && !profilingEnabled.get()) {
+                            Logger.info("Profiling enabled by server response");
+                            profilingEnabled.set(true);
+                            // Initial thread dump
+                            sendAllThreads();
+                        } else if (!shouldProfile && profilingEnabled.get()) {
+                            Logger.info("Profiling disabled by server response");
+                            profilingEnabled.set(false);
+                        }
                     }
                 } catch (Exception e) {
                     Logger.error("Failed to parse heartbeat response", e);
