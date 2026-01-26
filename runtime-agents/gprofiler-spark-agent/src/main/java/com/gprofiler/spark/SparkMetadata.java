@@ -8,17 +8,6 @@ public class SparkMetadata {
     public static JsonObject getMetadata() {
         JsonObject json = new JsonObject();
 
-        // Extract Spark properties
-        String appId = System.getProperty("spark.app.id");
-        String appName = System.getProperty("spark.app.name");
-
-        if (appId != null) {
-            json.addProperty("spark.app.id", appId);
-        }
-        if (appName != null) {
-            json.addProperty("spark.app.name", appName);
-        }
-
         // Extract PID (Java 8 compatible)
         String pid = getPid();
         if (pid != null) {
@@ -28,6 +17,24 @@ public class SparkMetadata {
                 // Should not happen if getPid works as expected
                 json.addProperty("pid_raw", pid);
             }
+        }
+
+        // Extract Spark properties
+        String appId = System.getProperty("spark.app.id");
+        String appName = System.getProperty("spark.app.name");
+
+        if (appId == null && pid != null) {
+            appId = "unknown-app-" + pid;
+        }
+        if (appName == null) {
+            appName = "Unknown Spark App";
+        }
+
+        if (appId != null) {
+            json.addProperty("spark.app.id", appId);
+        }
+        if (appName != null) {
+            json.addProperty("spark.app.name", appName);
         }
 
         return json;
