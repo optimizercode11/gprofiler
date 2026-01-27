@@ -203,19 +203,25 @@ class ProfilerAPIClient(BaseAPIClient):
         spawn_time: float,
         metrics: "Metrics",
         gpid: str,
+        spark_metadata: Optional[List[Dict]] = None,
     ) -> Dict:
+        data = {
+            "start_time": get_iso8601_format_time(start_time),
+            "end_time": get_iso8601_format_time(end_time),
+            "hostname": self._hostname,
+            "profile": profile,
+            "cpu_avg": metrics.cpu_avg,
+            "mem_avg": metrics.mem_avg,
+            "spawn_time": get_iso8601_format_time_from_epoch_time(spawn_time),
+            "gpid": gpid,
+        }
+
+        if spark_metadata:
+            data["spark_metadata"] = spark_metadata
+
         return self.post(
             "profiles",
-            {
-                "start_time": get_iso8601_format_time(start_time),
-                "end_time": get_iso8601_format_time(end_time),
-                "hostname": self._hostname,
-                "profile": profile,
-                "cpu_avg": metrics.cpu_avg,
-                "mem_avg": metrics.mem_avg,
-                "spawn_time": get_iso8601_format_time_from_epoch_time(spawn_time),
-                "gpid": gpid,
-            },
+            data,
             timeout=self._upload_timeout,
             api_version="v2" if profile_api_version is None else profile_api_version,
             params={"version": __version__},

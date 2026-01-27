@@ -201,6 +201,8 @@ class GProfiler:
             max_processes_per_profiler=user_args.get("max_processes_per_profiler", 0),
             max_system_processes_for_system_profilers=user_args.get("max_system_processes_for_system_profilers", 0),
             spark_controller=self._spark_controller,
+            output_dir=self._output_dir,
+            profiler_api_client=self._profiler_api_client,
         )
         self.system_profiler, self.process_profilers = get_profilers(user_args, profiler_state=self._profiler_state)
         self._usage_logger = usage_logger
@@ -913,6 +915,13 @@ def parse_cmd_args() -> configargparse.Namespace:
         help="Profile all Spark applications, ignoring server-side allow-list (testing only)",
     )
 
+    spark_options.add_argument(
+        "--spark-mode",
+        action="store_true",
+        default=False,
+        help="Run in Spark mode: disables system profiling, enables checkpointing on thread updates, and filters for Spark apps.",
+    )
+
     nodejs_options = parser.add_argument_group("NodeJS")
     nodejs_options.add_argument(
         "--nodejs-mode",
@@ -1278,6 +1287,14 @@ def parse_cmd_args() -> configargparse.Namespace:
 
     if args.profile_spawned_processes and args.pids_to_profile is not None:
         parser.error("--pids is not allowed when profiling spawned processes")
+
+    if args.spark_mode:
+        # In Spark mode, we force disable system profilers (perf)
+        # and ensure we use allocation/java mode if not specified, though user can still control mode.
+        # Primarily we want to avoid perf.
+        if args.perf_mode != "disabled":
+            logger.info("Spark mode enabled: Disabling system profiler (perf)")
+            args.perf_mode = "disabled"
 
     if args.enable_heartbeat_server:
         if not args.upload_results:

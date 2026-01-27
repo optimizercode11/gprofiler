@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, List, Optional
 from psutil import Process
 
 if TYPE_CHECKING:
+    from gprofiler.client import ProfilerAPIClient
     from gprofiler.containers_client import ContainerNamesClient
 
 from gprofiler.utils import TemporaryDirectoryWithMode
@@ -28,6 +29,8 @@ class ProfilerState:
     max_processes_per_profiler: int
     max_system_processes_for_system_profilers: int
     spark_controller: Optional[object] = None
+    output_dir: Optional[str] = None
+    profiler_api_client: Optional[ProfilerAPIClient] = None
 
     def __post_init__(self) -> None:
         self._temporary_dir = TemporaryDirectoryWithMode(dir=self.storage_dir, mode=0o755)
