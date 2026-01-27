@@ -77,6 +77,8 @@ class PHPSpyProfiler(ProfilerBase):
     ):
         assert php_mode == "phpspy", "PHP profiler should not be initialized, wrong php_mode value given"
         super().__init__(frequency, duration, profiler_state, min_duration)
+        # check that the resource exists
+        resource_path(self.PHPSPY_RESOURCE)
         self._process: Optional[Popen] = None
         self._output_path = Path(self._profiler_state.storage_dir) / f"phpspy.{random_prefix()}.col"
         self._process_filter = php_process_filter

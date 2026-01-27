@@ -213,6 +213,8 @@ class PySpyProfiler(SpawningProcessProfilerBase):
         self.add_versions = add_versions
         self._metadata = PythonMetadata(self._profiler_state.stop_event)
         self._python_pyspy_process = python_pyspy_process
+        # check that the resource exists
+        resource_path("python/py-spy")
 
     def _make_command(self, pid: int, output_path: str, duration: int) -> List[str]:
         command = [

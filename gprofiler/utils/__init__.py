@@ -56,6 +56,7 @@ from gprofiler.exceptions import (
     CalledProcessTimeoutError,
     ProcessStoppedException,
     ProgramMissingException,
+    ResourceMissingError,
     StopEventSetException,
 )
 from gprofiler.log import get_logger_adapter
@@ -85,8 +86,8 @@ def resource_path(relative_path: str = "") -> str:
     try:
         with importlib.resources.path(package, basename) as path:
             return str(path)
-    except ImportError as e:
-        raise Exception(f"Resource {relative_path!r} not found!") from e
+    except (ImportError, FileNotFoundError) as e:
+        raise ResourceMissingError(relative_path) from e
 
 
 def start_process(
