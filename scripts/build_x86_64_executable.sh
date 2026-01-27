@@ -77,6 +77,11 @@ docker buildx build -f executable.Dockerfile --output type=local,dest=build/x86_
     --build-arg DOTNET_BUILDER=$DOTNET_BUILDER \
     --build-arg NODE_PACKAGE_BUILDER_MUSL=$AP_BUILDER_ALPINE \
     --build-arg NODE_PACKAGE_BUILDER_GLIBC=$NODE_PACKAGE_BUILDER_GLIBC \
+    --build-arg ENABLE_DOTNET=${ENABLE_DOTNET:-1} \
+    --build-arg ENABLE_RBSPY=${ENABLE_RBSPY:-1} \
+    --build-arg ENABLE_PYSPY=${ENABLE_PYSPY:-1} \
+    --build-arg ENABLE_PHPSPY=${ENABLE_PHPSPY:-1} \
+    --build-arg ENABLE_NODE=${ENABLE_NODE:-1} \
     --build-arg STATICX=$with_staticx \
     --build-arg PROXY="$with_proxy" \
     . "$@"
