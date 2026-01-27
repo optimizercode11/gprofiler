@@ -61,6 +61,24 @@ For each profiling session (each profiling duration), gProfiler produces outputs
 * `--no-java` or `--java-mode disabled`: Disable profilers for Java.
 * `--no-java-async-profiler-buildids`: Disable embedding of buildid+offset in async-profiler native frames (used when debug symbols are unavailable).
 
+### Spark Mode
+
+gProfiler includes a dedicated mode for profiling Apache Spark applications, enabled via the `--spark-mode` flag. This mode is designed for environments dedicated to running Spark executors/drivers and optimizes the profiling behavior for that use case.
+
+When `--spark-mode` is active:
+* **System-wide profiling (perf) is disabled** to reduce overhead and focus on the JVM.
+* **Strict Filtering:** gProfiler only attaches to Java processes that have established a heartbeat session via the Granulate Java Agent. Other Java processes are ignored until they report a valid Spark application ID.
+* **Event-Driven Checkpointing:** Instead of fixed-duration profiling cycles, gProfiler runs an infinite profiling session that checkpoints immediately when the Spark application reports a thread name update (e.g., a new stage or task set starting).
+    * Upon an update event, gProfiler stops the current session, captures the profile and metadata, and uploads them asynchronously.
+    * It immediately restarts profiling for the next segment.
+* **Cooldown Management:** To prevent thrashing during rapid thread updates, a 30-second cooldown is enforced. Updates occurring within this window are queued and bundled with the next checkpoint, ensuring no metadata is lost while maintaining stability.
+
+**Usage:**
+```bash
+python3 -m gprofiler --spark-mode --upload-results ...
+```
+*Note: This requires the target Spark applications to be running with the Granulate Java Agent configured to communicate with gProfiler.*
+
 ### Python profiling options
 * `--no-python`: Alias of `--python-mode disabled`.
 * `--python-mode`: Controls which profiler is used for Python.
