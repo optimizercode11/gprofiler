@@ -1350,25 +1350,114 @@ class JavaProfiler(SpawningProcessProfilerBase):
             pid=pid,
         )
 
+    def _checkpoint_and_upload_spark_profile(
+        self,
+        ap_proc: AsyncProfiledProcess,
+        output: str,
+        comm: str,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        spawn_time: float,
+        spark_threads: Optional[Dict],
+        queued_updates: List[Dict],
+        app_id: Optional[str]
+    ) -> None:
+        """Helper to save and upload Spark profiles and metadata."""
+        if not self._profiler_state.output_dir:
+            return
+
+        # Placeholder metrics for internal upload
+        from gprofiler.system_metrics import Metrics
+        dummy_metrics = Metrics(0, 0)
+
+        try:
+            timestamp_str = end_time.strftime("%Y-%m-%dT%H_%M_%S")
+            base_filename = f"profile_{timestamp_str}_{ap_proc.process.pid}"
+            collapsed_path = os.path.join(self._profiler_state.output_dir, f"{base_filename}.col")
+
+            with open(collapsed_path, "w") as f:
+                f.write(parse_one_collapsed(output, comm).stack_summary.to_file_content())
+            logger.info(f"Saved Spark checkpoint to {collapsed_path}")
+
+            update_payloads = []
+            if spark_threads:
+                meta_path = os.path.join(self._profiler_state.output_dir, f"{base_filename}_metadata.json")
+                with open(meta_path, "w") as f:
+                    json.dump({"threads": spark_threads, "app_id": app_id}, f)
+
+            for update in queued_updates:
+                idx = update["update_index"]
+                update_path = os.path.join(self._profiler_state.output_dir, f"{base_filename}_metadata_{idx}.json")
+                with open(update_path, "w") as f:
+                    json.dump(update, f)
+                update_payloads.append(update)
+
+            if self._profiler_state.profiler_api_client:
+                client = self._profiler_state.profiler_api_client
+
+                def _upload_task(
+                    p_client=client,
+                    p_start=start_time,
+                    p_end=end_time,
+                    p_output=output,
+                    p_comm=comm,
+                    p_threads=spark_threads,
+                    p_updates=update_payloads
+                ):
+                    try:
+                        metadata_list = []
+                        if p_threads:
+                             metadata_list.append({
+                                 "timestamp": p_start.isoformat(),
+                                 "threads": p_threads,
+                                 "type": "base"
+                             })
+                        metadata_list.extend(p_updates)
+
+                        collapsed_str = parse_one_collapsed(p_output, p_comm).stack_summary.to_file_content()
+
+                        p_client.submit_profile(
+                            start_time=p_start,
+                            end_time=p_end,
+                            profile=collapsed_str,
+                            profile_api_version=None,
+                            spawn_time=spawn_time,
+                            metrics=dummy_metrics,
+                            gpid="",
+                            spark_metadata=metadata_list
+                        )
+                        logger.info(f"Uploaded Spark checkpoint for {ap_proc.process.pid}")
+                    except Exception as e:
+                        logger.error(f"Failed to upload Spark checkpoint: {e}")
+
+                Thread(target=_upload_task, name=f"Upload-{ap_proc.process.pid}").start()
+
+        except Exception as e:
+            logger.error(f"Failed to handle Spark checkpoint: {e}")
+
     def _profile_ap_process(self, ap_proc: AsyncProfiledProcess, comm: str, duration: int) -> StackToSampleCount:
         total_duration = duration
         start_time_global = time.monotonic()
         restart_event = None
         queued_metadata_updates: List[Dict] = []
         update_counter = 0
+        is_spark_mode = self._profiler_state.spark_controller is not None
 
-        if self._profiler_state.spark_controller:
+        if is_spark_mode:
             restart_event = self._profiler_state.spark_controller.get_restart_event(ap_proc.process.pid)
             if restart_event:
                 restart_event.clear()
+            # In Spark mode, ignore the duration limit for the session.
+            # We run until the process exits or global stop_event is set.
+            # We set total_duration to a very large number effectively making it infinite.
+            # The outer gprofiler loop might still wait on us, but since we return skipped profiles
+            # on checkpoints, we control the flow.
+            # Wait, if we never return, gprofiler main loop (snapshot) will block forever on us.
+            # This is desired behavior: "continue to profile under the same session".
+            total_duration = 31536000000 # 1000 years
 
         segment_start_time = datetime.datetime.utcnow()
-        # Approximation of spawn_time
-        spawn_time = time.time()
-
-        # Placeholder metrics for internal upload
-        from gprofiler.system_metrics import Metrics
-        dummy_metrics = Metrics(0, 0)
+        spawn_time = time.time() # Approximation
 
         while True:
             # Calculate remaining duration for the global session
@@ -1455,81 +1544,28 @@ class JavaProfiler(SpawningProcessProfilerBase):
             segment_end_time = datetime.datetime.utcnow()
             output = ap_proc.read_output()
 
-            if output and (stop_reason == "restart" or (self._profiler_state.spark_controller and self._profiler_state.output_dir)):
-
+            if output and (stop_reason == "restart" or (is_spark_mode and self._profiler_state.output_dir)):
                 current_metadata = self._metadata.get_metadata(ap_proc.process)
                 spark_threads = current_metadata.get("spark_threads")
+                app_id = current_metadata.get("app_id")
 
-                if self._profiler_state.output_dir:
-                     try:
-                         timestamp_str = segment_end_time.strftime("%Y-%m-%dT%H_%M_%S")
-                         base_filename = f"profile_{timestamp_str}_{ap_proc.process.pid}"
-                         collapsed_path = os.path.join(self._profiler_state.output_dir, f"{base_filename}.col")
+                self._checkpoint_and_upload_spark_profile(
+                    ap_proc, output, comm, segment_start_time, segment_end_time, spawn_time,
+                    spark_threads, queued_metadata_updates, app_id
+                )
+                queued_metadata_updates = []
 
-                         with open(collapsed_path, "w") as f:
-                             f.write(parse_one_collapsed(output, comm).stack_summary.to_file_content())
-                         logger.info(f"Saved Spark checkpoint to {collapsed_path}")
-
-                         update_payloads = []
-                         if spark_threads:
-                             meta_path = os.path.join(self._profiler_state.output_dir, f"{base_filename}_metadata.json")
-                             with open(meta_path, "w") as f:
-                                 json.dump({"threads": spark_threads, "app_id": current_metadata.get("app_id")}, f)
-
-                         for update in queued_metadata_updates:
-                             idx = update["update_index"]
-                             update_path = os.path.join(self._profiler_state.output_dir, f"{base_filename}_metadata_{idx}.json")
-                             with open(update_path, "w") as f:
-                                 json.dump(update, f)
-                             update_payloads.append(update)
-
-                         queued_metadata_updates = []
-
-                         if self._profiler_state.profiler_api_client:
-                             client = self._profiler_state.profiler_api_client
-
-                             def _upload_task(
-                                 p_client=client,
-                                 p_start=segment_start_time,
-                                 p_end=segment_end_time,
-                                 p_output=output,
-                                 p_comm=comm,
-                                 p_threads=spark_threads,
-                                 p_updates=update_payloads
-                             ):
-                                 try:
-                                     metadata_list = []
-                                     if p_threads:
-                                          metadata_list.append({
-                                              "timestamp": p_start.isoformat(),
-                                              "threads": p_threads,
-                                              "type": "base"
-                                          })
-                                     metadata_list.extend(p_updates)
-
-                                     collapsed_str = parse_one_collapsed(p_output, p_comm).stack_summary.to_file_content()
-
-                                     p_client.submit_profile(
-                                         start_time=p_start,
-                                         end_time=p_end,
-                                         profile=collapsed_str,
-                                         profile_api_version=None,
-                                         spawn_time=spawn_time,
-                                         metrics=dummy_metrics,
-                                         gpid="",
-                                         spark_metadata=metadata_list
-                                     )
-                                     logger.info(f"Uploaded Spark checkpoint for {ap_proc.process.pid}")
-                                 except Exception as e:
-                                     logger.error(f"Failed to upload Spark checkpoint: {e}")
-
-                             Thread(target=_upload_task, name=f"Upload-{ap_proc.process.pid}").start()
-
-                     except Exception as e:
-                         logger.error(f"Failed to handle Spark checkpoint: {e}")
+                if stop_reason == "restart":
+                    # Force refresh of metadata for the next segment if we are restarting
+                    try:
+                        # Invalidate cache for this process to ensure fresh metadata is fetched
+                        if hasattr(self._metadata, "_cache") and ap_proc.process in self._metadata._cache:
+                            del self._metadata._cache[ap_proc.process]
+                    except Exception as e:
+                        logger.warning(f"Failed to clear metadata cache for process {ap_proc.process.pid}: {e}")
 
             if stop_reason in ("timeout", "stop_event", "exited"):
-                if self._profiler_state.spark_controller and self._profiler_state.output_dir:
+                if is_spark_mode and self._profiler_state.output_dir:
                     return self._profiling_error_stack("skipped", "handled_internally", comm)
                 break
 
