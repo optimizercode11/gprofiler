@@ -84,6 +84,11 @@ class ProgramMissingException(Exception):
         super().__init__(f"The program {program!r} is missing! Please install it")
 
 
+class ResourceMissingError(Exception):
+    def __init__(self, resource_path: str):
+        super().__init__(f"Resource {resource_path!r} not found!")
+
+
 class APIError(Exception):
     def __init__(self, message: str, full_data: dict = None):
         self.message = message

@@ -85,6 +85,8 @@ class DotnetProfiler(ProcessProfilerBase):
         assert (
             dotnet_mode == "dotnet-trace"
         ), "Dotnet profiler should not be initialized, wrong dotnet-trace value given"
+        # check that the resource exists
+        resource_path(self.RESOURCE_PATH)
         self._metadata = DotnetMetadata(self._profiler_state.stop_event)
 
     def _make_command(self, process: Process, duration: int, output_path: str) -> List[str]:

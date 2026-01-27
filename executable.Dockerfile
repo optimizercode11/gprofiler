@@ -19,40 +19,58 @@ ARG NODE_PACKAGE_BUILDER_GLIBC
 # py-spy
 FROM rust${PYSPY_RUST_BUILDER_VERSION} AS pyspy-builder
 WORKDIR /tmp
+ARG ENABLE_PYSPY=1
 
 COPY scripts/prepare_machine-unknown-linux-musl.sh .
 COPY scripts/libunwind_build.sh .
-RUN ./prepare_machine-unknown-linux-musl.sh
+RUN if [ "$ENABLE_PYSPY" = "1" ]; then ./prepare_machine-unknown-linux-musl.sh; fi
 
 COPY scripts/pyspy_build.sh .
 COPY scripts/pyspy_commit.txt .
 COPY scripts/pyspy_tag.txt .
-RUN ./pyspy_build.sh
-RUN mv "/tmp/py-spy/target/$(uname -m)-unknown-linux-musl/release/py-spy" /tmp/py-spy/py-spy
+RUN if [ "$ENABLE_PYSPY" = "1" ]; then \
+      ./pyspy_build.sh && \
+      mv "/tmp/py-spy/target/$(uname -m)-unknown-linux-musl/release/py-spy" /tmp/py-spy/py-spy; \
+    else \
+      mkdir -p /tmp/py-spy && touch /tmp/py-spy/py-spy; \
+    fi
 
 # rbspy
 FROM rust${RBSPY_RUST_BUILDER_VERSION} AS rbspy-builder
 WORKDIR /tmp
+ARG ENABLE_RBSPY=1
 
 COPY scripts/prepare_machine-unknown-linux-musl.sh .
 COPY scripts/libunwind_build.sh .
-RUN ./prepare_machine-unknown-linux-musl.sh
+RUN if [ "$ENABLE_RBSPY" = "1" ]; then ./prepare_machine-unknown-linux-musl.sh; fi
 
 COPY scripts/rbspy_build.sh .
-RUN ./rbspy_build.sh
-RUN mv "/tmp/rbspy/target/$(uname -m)-unknown-linux-musl/release/rbspy" /tmp/rbspy/rbspy
+RUN if [ "$ENABLE_RBSPY" = "1" ]; then \
+      ./rbspy_build.sh && \
+      mv "/tmp/rbspy/target/$(uname -m)-unknown-linux-musl/release/rbspy" /tmp/rbspy/rbspy; \
+    else \
+      mkdir -p /tmp/rbspy && touch /tmp/rbspy/rbspy; \
+    fi
 
 # dotnet-trace
 FROM mcr.microsoft.com/dotnet/sdk${DOTNET_BUILDER} as dotnet-builder
 WORKDIR /tmp
-RUN apt-get update && \
-  dotnet tool install --global dotnet-trace --version 6.0.351802 && \
-  apt-get install -y --no-install-recommends patchelf
+ARG ENABLE_DOTNET=1
+RUN if [ "$ENABLE_DOTNET" = "1" ]; then \
+      apt-get update && \
+      dotnet tool install --global dotnet-trace --version 6.0.351802 && \
+      apt-get install -y --no-install-recommends patchelf; \
+    fi
 
-RUN cp -r "$HOME/.dotnet" "/tmp/dotnet"
+RUN if [ "$ENABLE_DOTNET" = "1" ]; then \
+      cp -r "$HOME/.dotnet" "/tmp/dotnet"; \
+    else \
+      mkdir -p /tmp/dotnet/tools && mkdir -p /tmp/dotnet/deps && \
+      mkdir -p /usr/share/dotnet && touch /usr/share/dotnet/host; \
+    fi
 COPY scripts/dotnet_prepare_dependencies.sh .
 COPY scripts/dotnet_trace_dependencies.txt .
-RUN ./dotnet_prepare_dependencies.sh
+RUN if [ "$ENABLE_DOTNET" = "1" ]; then ./dotnet_prepare_dependencies.sh; fi
 
 # perf
 FROM ubuntu${PERF_BUILDER_UBUNTU} AS perf-builder
@@ -70,10 +88,18 @@ RUN ./perf_build.sh
 # phpspy
 FROM ubuntu${PHPSPY_BUILDER_UBUNTU} as phpspy-builder
 WORKDIR /tmp
+ARG ENABLE_PHPSPY=1
 COPY scripts/phpspy_env.sh .
-RUN ./phpspy_env.sh
+RUN if [ "$ENABLE_PHPSPY" = "1" ]; then ./phpspy_env.sh; fi
 COPY scripts/phpspy_build.sh .
-RUN ./phpspy_build.sh
+RUN if [ "$ENABLE_PHPSPY" = "1" ]; then \
+      ./phpspy_build.sh; \
+    else \
+      mkdir -p /tmp/phpspy && touch /tmp/phpspy/phpspy && \
+      mkdir -p /tmp/binutils/binutils-2.25/bin/bin && \
+      touch /tmp/binutils/binutils-2.25/bin/bin/objdump && \
+      touch /tmp/binutils/binutils-2.25/bin/bin/strings; \
+    fi
 
 # async-profiler glibc
 FROM centos${AP_BUILDER_CENTOS} AS async-profiler-builder-glibc
@@ -113,10 +139,15 @@ RUN ./burn_build.sh
 # node-package-builder-musl
 FROM alpine${NODE_PACKAGE_BUILDER_MUSL} AS node-package-builder-musl
 WORKDIR /tmp
+ARG ENABLE_NODE=1
 COPY scripts/node_builder_musl_env.sh .
-RUN ./node_builder_musl_env.sh
+RUN if [ "$ENABLE_NODE" = "1" ]; then ./node_builder_musl_env.sh; fi
 COPY scripts/build_node_package.sh .
-RUN ./build_node_package.sh
+RUN if [ "$ENABLE_NODE" = "1" ]; then \
+      ./build_node_package.sh; \
+    else \
+      mkdir -p /tmp/module_build; \
+    fi
 
 # building bcc along with helpers
 # built on newer Ubuntu because they require new clang (newer than available in GPROFILER_BUILDER's CentOS 7)
@@ -201,13 +232,18 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip
 FROM ${NODE_PACKAGE_BUILDER_GLIBC} as node-package-builder-glibc
 USER 0
 WORKDIR /tmp
+ARG ENABLE_NODE=1
 COPY scripts/node_builder_glibc_env.sh scripts/fix_centos7.sh ./
-RUN if grep -q "CentOS Linux 7" /etc/os-release ; then \
+RUN if [ "$ENABLE_NODE" = "1" ] && grep -q "CentOS Linux 7" /etc/os-release ; then \
       ./fix_centos7.sh; \
     fi
-RUN ./node_builder_glibc_env.sh
+RUN if [ "$ENABLE_NODE" = "1" ]; then ./node_builder_glibc_env.sh; fi
 COPY scripts/build_node_package.sh .
-RUN ./build_node_package.sh
+RUN if [ "$ENABLE_NODE" = "1" ]; then \
+      ./build_node_package.sh; \
+    else \
+      mkdir -p /tmp/module_build; \
+    fi
 # needed for hadolint
 WORKDIR /app
 USER 1001
@@ -216,6 +252,11 @@ FROM build-prepare as build-stage
 
 ARG STATICX=true
 ENV STATICX=${STATICX}
+ARG ENABLE_PYSPY=1
+ARG ENABLE_RBSPY=1
+ARG ENABLE_DOTNET=1
+ARG ENABLE_PHPSPY=1
+ARG ENABLE_NODE=1
 
 COPY requirements.txt requirements.txt
 COPY granulate-utils/setup.py granulate-utils/requirements.txt granulate-utils/README.md granulate-utils/
@@ -237,17 +278,28 @@ COPY --from=bcc-build /bpf_get_fs_offset/get_fs_offset gprofiler/resources/pytho
 COPY --from=bcc-build /bpf_get_stack_offset/get_stack_offset gprofiler/resources/python/pyperf/
 
 COPY --from=pyspy-builder /tmp/py-spy/py-spy gprofiler/resources/python/py-spy
+RUN if [ "$ENABLE_PYSPY" != "1" ]; then rm gprofiler/resources/python/py-spy; fi
+
 COPY --from=rbspy-builder /tmp/rbspy/rbspy gprofiler/resources/ruby/rbspy
+RUN if [ "$ENABLE_RBSPY" != "1" ]; then rm gprofiler/resources/ruby/rbspy; fi
+
 COPY --from=perf-builder /perf gprofiler/resources/perf
 COPY perfspect/perfspect gprofiler/resources/perfspect/perfspect
 
 COPY --from=dotnet-builder /usr/share/dotnet/host gprofiler/resources/dotnet/host
 COPY --from=dotnet-builder /tmp/dotnet/deps gprofiler/resources/dotnet/shared/Microsoft.NETCore.App/6.0.7
 COPY --from=dotnet-builder /tmp/dotnet/tools gprofiler/resources/dotnet/tools
+RUN if [ "$ENABLE_DOTNET" != "1" ]; then \
+      rm -rf gprofiler/resources/dotnet; \
+    fi
 
 COPY --from=phpspy-builder /tmp/phpspy/phpspy gprofiler/resources/php/phpspy
 COPY --from=phpspy-builder /tmp/binutils/binutils-2.25/bin/bin/objdump gprofiler/resources/php/objdump
 COPY --from=phpspy-builder /tmp/binutils/binutils-2.25/bin/bin/strings gprofiler/resources/php/strings
+RUN if [ "$ENABLE_PHPSPY" != "1" ]; then \
+      rm gprofiler/resources/php/phpspy gprofiler/resources/php/objdump gprofiler/resources/php/strings; \
+    fi
+
 # copying from async-profiler-builder as an "old enough" centos.
 COPY --from=async-profiler-builder-glibc /usr/bin/awk gprofiler/resources/php/awk
 COPY --from=async-profiler-builder-glibc /usr/bin/xargs gprofiler/resources/php/xargs
@@ -259,6 +311,9 @@ COPY --from=async-profiler-centos-min-test-glibc /libasyncProfiler.so gprofiler/
 COPY --from=async-profiler-builder-musl /tmp/async-profiler/build/lib/libasyncProfiler.so gprofiler/resources/java/musl/libasyncProfiler.so
 COPY --from=node-package-builder-musl /tmp/module_build gprofiler/resources/node/module/musl
 COPY --from=node-package-builder-glibc /tmp/module_build gprofiler/resources/node/module/glibc
+RUN if [ "$ENABLE_NODE" != "1" ]; then \
+      rm -rf gprofiler/resources/node; \
+    fi
 
 COPY --from=burn-builder /tmp/burn/burn gprofiler/resources/burn
 

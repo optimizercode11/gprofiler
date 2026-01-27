@@ -94,6 +94,8 @@ class RbSpyProfiler(SpawningProcessProfilerBase):
     ):
         super().__init__(frequency, duration, profiler_state, min_duration)
         assert ruby_mode == "rbspy", "Ruby profiler should not be initialized, wrong ruby_mode value given"
+        # check that the resource exists
+        resource_path(self.RESOURCE_PATH)
         self._metadata = RubyMetadata(self._profiler_state.stop_event)
 
     def _is_process_exit_during_profiling_error(self, stderr: str) -> bool:
