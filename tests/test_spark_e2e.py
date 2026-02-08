@@ -6,6 +6,7 @@ import requests
 import pytest
 import sys
 import glob
+import json
 from pathlib import Path
 
 # Constants
@@ -31,13 +32,22 @@ def setup_environment():
     if not EXECUTABLE.exists():
         pytest.fail("gprofiler executable not found!")
 
-    # 2. Download Spark
+    # 2. Build Java Agent
+    agent_dir = REPO_ROOT / "runtime-agents" / "gprofiler-spark-agent"
+    print("Building gprofiler-spark-agent...")
+    subprocess.run(["mvn", "clean", "package", "-DskipTests"], check=True, cwd=agent_dir)
+    agent_jar = list((agent_dir / "target").glob("gprofiler-spark-agent-*.jar"))[0]
+    if not agent_jar.exists():
+        pytest.fail("gprofiler-spark-agent jar not found!")
+    os.environ["GPROFILER_SPARK_AGENT_JAR"] = str(agent_jar)
+
+    # 3. Download Spark
     if not os.path.exists(SPARK_DIR):
         print(f"Downloading Spark {SPARK_VERSION}...")
         subprocess.run(["curl", "-O", SPARK_URL], check=True)
         subprocess.run(["tar", "-xzf", SPARK_TGZ], check=True)
 
-    # 3. Create output directory
+    # 4. Create output directory
     if OUTPUT_DIR.exists():
         shutil.rmtree(OUTPUT_DIR)
     OUTPUT_DIR.mkdir()
@@ -101,15 +111,17 @@ public class GProfilerTestApp {
         System.out.println("Spark App Started. Driver PID: " + name);
 
         List<Integer> data = new ArrayList<>();
-        for (int i = 0; i < 100000; i++) {
+        for (int i = 0; i < 10000; i++) {
             data.add(i);
         }
 
-        for (int i = 0; i < 60; i++) {
-            JavaRDD<Integer> distData = sc.parallelize(data);
-            long count = distData.count();
+        // Run for enough time to allow gprofiler to attach and capture multiple snapshots/updates
+        for (int i = 0; i < 30; i++) {
+            // Use 4 partitions to trigger multiple tasks (and potential thread reuse/renaming)
+            JavaRDD<Integer> distData = sc.parallelize(data, 4);
+            long count = distData.map(x -> x * 2).count();
             System.out.println("Iteration " + i + ": " + count);
-            Thread.sleep(1000);
+            Thread.sleep(2000); // Sleep to extend duration
         }
 
         sc.stop();
@@ -128,13 +140,19 @@ public class GProfilerTestApp {
     env = os.environ.copy()
     env["SPARK_HOME"] = str(spark_home)
 
-    print("Submitting Spark Application...")
+    agent_jar = os.environ.get("GPROFILER_SPARK_AGENT_JAR")
+    if not agent_jar:
+        pytest.fail("GPROFILER_SPARK_AGENT_JAR environment variable not set")
+
+    print(f"Submitting Spark Application with agent: {agent_jar}...")
     # Using Popen for async execution
     app_proc = subprocess.Popen(
         [
             f"./{SPARK_DIR}/bin/spark-submit",
             "--class", "GProfilerTestApp",
             "--master", spark_cluster,
+            "--conf", f"spark.driver.extraJavaOptions=-javaagent:{agent_jar}",
+            "--conf", f"spark.executor.extraJavaOptions=-javaagent:{agent_jar}",
             "GProfilerTestApp.jar"
         ],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -160,13 +178,21 @@ public class GProfilerTestApp {
 
     start_time = time.time()
     found_profile = False
+    metadata_files = []
 
-    while time.time() - start_time < 50:
+    # Wait up to 90 seconds (Spark app setup + profiling duration)
+    while time.time() - start_time < 90:
         # Check output directory for .col files (collapsed stacks) or .json
         files = list(OUTPUT_DIR.glob("*"))
-        if len(files) > 0:
+        metadata_files = list(OUTPUT_DIR.glob("*_metadata*.json"))
+
+        if len(files) > 0 and len(metadata_files) > 0:
             print(f"Found profile output: {files}")
             found_profile = True
+            # Wait a bit more to allow for updates to be written
+            time.sleep(10)
+            # Refresh file list
+            metadata_files = list(OUTPUT_DIR.glob("*_metadata*.json"))
             break
         time.sleep(2)
 
@@ -178,3 +204,25 @@ public class GProfilerTestApp {
 
     # Assertions
     assert found_profile, f"No profile data found in {OUTPUT_DIR}"
+    assert len(metadata_files) > 0, f"No metadata files found in {OUTPUT_DIR}"
+
+    # Verify metadata content
+    spark_thread_found = False
+    thread_names = set()
+
+    for meta_file in metadata_files:
+        print(f"Inspecting metadata file: {meta_file}")
+        with open(meta_file) as f:
+            try:
+                data = json.load(f)
+                threads = data.get("threads", {})
+                for tid, name in threads.items():
+                    thread_names.add(name)
+                    # typical Spark executor threads
+                    if "Executor task launch worker" in name or "TaskSetManager" in name:
+                        print(f"Found Spark thread: {name} (TID: {tid})")
+                        spark_thread_found = True
+            except json.JSONDecodeError:
+                print(f"Failed to decode JSON from {meta_file}")
+
+    assert spark_thread_found, f"Did not find any Spark execution threads in metadata. Found: {thread_names}"
