@@ -16,6 +16,17 @@
 #
 set -euo pipefail
 
+if [ ! -f "granulate-utils/setup.py" ]; then
+    if [ -d ".git" ]; then
+        echo "granulate-utils/setup.py is missing. Attempting to initialize submodules..."
+        git submodule update --init --recursive
+    else
+        echo "ERROR: granulate-utils/setup.py is missing and this is not a git repository."
+        echo "Please download the granulate-utils submodule manually."
+        exit 1
+    fi
+fi
+
 if [ "$#" -gt 0 ] && [ "$1" == "--fast" ]; then
     with_staticx=false
     shift
