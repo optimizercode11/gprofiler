@@ -25,25 +25,48 @@ OUTPUT_DIR = REPO_ROOT / "spark_profile_output"
 @pytest.fixture(scope="module")
 def setup_environment():
     """Builds gprofiler and downloads Spark."""
+
+    force_rebuild = os.environ.get("GPROFILER_FORCE_BUILD", "").lower() in ["true", "1", "yes"]
+
     # 1. Build gprofiler
-    print("Building gprofiler executable...")
-    # Using --fast to skip staticx if possible, but for e2e full build is safer.
-    subprocess.run([str(REPO_ROOT / "scripts" / "build_x86_64_executable.sh"), "--fast"], check=True, cwd=REPO_ROOT)
-    if not EXECUTABLE.exists():
-        pytest.fail("gprofiler executable not found!")
+    if EXECUTABLE.exists() and not force_rebuild:
+        print(f"Using existing gprofiler executable at {EXECUTABLE}. (Set GPROFILER_FORCE_BUILD=1 to rebuild)")
+        sys.stdout.flush()
+    else:
+        print("Building gprofiler executable (this may take 10-20 minutes)...")
+        sys.stdout.flush()
+        # Using --fast to skip staticx if possible, but for e2e full build is safer.
+        subprocess.run([str(REPO_ROOT / "scripts" / "build_x86_64_executable.sh"), "--fast"], check=True, cwd=REPO_ROOT)
+        if not EXECUTABLE.exists():
+            pytest.fail("gprofiler executable not found!")
 
     # 2. Build Java Agent
     agent_dir = REPO_ROOT / "runtime-agents" / "gprofiler-spark-agent"
-    print("Building gprofiler-spark-agent...")
-    subprocess.run(["mvn", "clean", "package", "-DskipTests"], check=True, cwd=agent_dir)
-    agent_jar = list((agent_dir / "target").glob("gprofiler-spark-agent-*.jar"))[0]
-    if not agent_jar.exists():
-        pytest.fail("gprofiler-spark-agent jar not found!")
+    agent_target = agent_dir / "target"
+    agent_jar_list = list(agent_target.glob("gprofiler-spark-agent-*.jar")) if agent_target.exists() else []
+
+    if agent_jar_list and not force_rebuild:
+        agent_jar = agent_jar_list[0]
+        print(f"Using existing gprofiler-spark-agent jar at {agent_jar}. (Set GPROFILER_FORCE_BUILD=1 to rebuild)")
+        sys.stdout.flush()
+    else:
+        print("Building gprofiler-spark-agent...")
+        sys.stdout.flush()
+        subprocess.run(["mvn", "clean", "package", "-DskipTests"], check=True, cwd=agent_dir)
+        agent_jar_list = list(agent_target.glob("gprofiler-spark-agent-*.jar"))
+        if not agent_jar_list:
+            pytest.fail("gprofiler-spark-agent jar not found!")
+        agent_jar = agent_jar_list[0]
+
     os.environ["GPROFILER_SPARK_AGENT_JAR"] = str(agent_jar)
 
     # 3. Download Spark
-    if not os.path.exists(SPARK_DIR):
-        print(f"Downloading Spark {SPARK_VERSION}...")
+    if os.path.exists(SPARK_DIR):
+        print(f"Using existing Spark directory {SPARK_DIR}. (Delete it to re-download)")
+        sys.stdout.flush()
+    else:
+        print(f"Downloading Spark {SPARK_VERSION} (this may take a few minutes)...")
+        sys.stdout.flush()
         subprocess.run(["curl", "-O", SPARK_URL], check=True)
         subprocess.run(["tar", "-xzf", SPARK_TGZ], check=True)
 
@@ -132,6 +155,7 @@ public class GProfilerTestApp {
     Path("GProfilerTestApp.java").write_text(java_src)
 
     print("Compiling Java Spark App...")
+    sys.stdout.flush()
     # Using subprocess.run with shell=False and list of arguments
     # Note: classpath globbing might be tricky if not expanded, but python's glob handles it.
     subprocess.run(["javac", "-cp", classpath, "GProfilerTestApp.java"], check=True)
@@ -145,6 +169,7 @@ public class GProfilerTestApp {
         pytest.fail("GPROFILER_SPARK_AGENT_JAR environment variable not set")
 
     print(f"Submitting Spark Application with agent: {agent_jar}...")
+    sys.stdout.flush()
     # Using Popen for async execution
     app_proc = subprocess.Popen(
         [
@@ -160,6 +185,7 @@ public class GProfilerTestApp {
 
     # 2. Start gprofiler in --spark-mode
     print("Starting gprofiler in --spark-mode...")
+    sys.stdout.flush()
     gprofiler_log = open("gprofiler_test.log", "w")
     gprofiler_proc = subprocess.Popen(
         [
